@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f2937">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Medication Timer</title>
+<style>
+:root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{margin:0;background:#f3f4f6;color:#111827}
+.wrap{max-width:760px;margin:0 auto;padding:16px 14px 40px}
+h1{font-size:28px;margin:6px 0 4px}
+.sub{color:#4b5563;margin:0 0 14px;font-size:14px;line-height:1.35}
+.banner{background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.35;margin-bottom:14px}
+.grid{display:grid;gap:12px}
+.card{background:#fff;border:1px solid #d1d5db;border-radius:16px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.name{font-size:21px;font-weight:700}
+.meta{font-size:13px;color:#6b7280;margin-top:2px}
+.status{font-size:15px;font-weight:700;margin:12px 0 4px}
+.detail{font-size:14px;color:#4b5563;line-height:1.4}
+button{width:100%;min-height:50px;border:0;border-radius:12px;font-size:17px;font-weight:700;margin-top:12px;padding:10px 12px}
+.take{background:#2563eb;color:white}
+.take:disabled{background:#9ca3af;color:#f3f4f6}
+.secondary{background:#e5e7eb;color:#111827}
+.toolbar{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
+.section-title{font-size:17px;font-weight:700;margin:20px 0 8px}
+.history{background:white;border:1px solid #d1d5db;border-radius:14px;overflow:hidden}
+.hist-row{padding:10px 12px;border-top:1px solid #e5e7eb;font-size:14px;display:flex;justify-content:space-between;gap:10px}
+.hist-row:first-child{border-top:0}
+.small{font-size:12px;color:#6b7280}
+.ok{color:#047857}.wait{color:#b45309}.stop{color:#b91c1c}
+@media (prefers-color-scheme:dark){
+ body{background:#111827;color:#f9fafb}
+ .sub,.meta,.detail,.small{color:#9ca3af}
+ .card,.history{background:#1f2937;border-color:#374151}
+ .hist-row{border-color:#374151}
+ .secondary{background:#374151;color:#f9fafb}
+ .banner{background:#3f2b18;border-color:#9a5b1a}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Medication Timer — TEST BUILD</h1>
+<p class="sub">Accelerated test build. Use this only to test buttons, countdowns, daily limits, history, undo, and alerts.</p>
+<div class="banner"><strong>TEST BUILD:</strong> These intervals are intentionally shortened to minutes and must not be used for real medication timing. <strong>Important:</strong> The production app timing is based on the schedule you chose, not on prescription-label instructions. If a label, discharge instruction, pharmacist, or clinician gives a different interval or daily maximum, follow that instead.</div>
+<div class="toolbar">
+<button id="notifyBtn" class="secondary">Enable Alerts</button>
+<button id="undoBtn" class="secondary">Undo Last Dose</button>
+</div>
+<div id="cards" class="grid"></div>
+<div class="section-title">Today's history</div>
+<div id="history" class="history"></div>
+<button id="clearBtn" class="secondary">Reset Today's Log</button>
+</div>
+<script>
+const meds = [
+ {id:'celebrex',name:'Celebrex',desc:'AM + PM • TEST: 4 min',max:2,intervalMin:4,mode:'scheduled'},
+ {id:'oxy',name:'Oxy',desc:'Up to 4× • TEST: 2 min',max:4,intervalMin:2,mode:'scheduled'},
+ {id:'tylenol',name:'Tylenol',desc:'Up to 4× • TEST: 2 min',max:4,intervalMin:2,mode:'scheduled'},
+ {id:'robaxin',name:'Robaxin',desc:'Muscle • up to 3× as needed • TEST: 3 min',max:3,intervalMin:3,mode:'prn'},
+ {id:'zofran',name:'Zofran',desc:'Stomach • up to 3× as needed • TEST: 3 min',max:3,intervalMin:3,mode:'prn'},
+ {id:'aspirin',name:'Aspirin',desc:'AM + PM • TEST: 4 min',max:2,intervalMin:4,mode:'scheduled'},
+ {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'}
+];
+const KEY='medTimerStateV1';
+let state=load();
+let tickHandle=null;
+let alertTimers=[];
+
+function localDayKey(d=new Date()){
+ const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+ return `${y}-${m}-${day}`;
+}
+function freshState(){ return {day:localDayKey(), logs:[], notified:{}}; }
+function load(){
+ try{
+  const s=JSON.parse(localStorage.getItem(KEY));
+  if(!s || s.day!==localDayKey()) return freshState();
+  return s;
+ }catch(e){ return freshState(); }
+}
+function save(){ localStorage.setItem(KEY,JSON.stringify(state)); }
+function fmtTime(ts){ return new Date(ts).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}); }
+function fmtDur(ms){
+ if(ms<=0) return 'now';
+ const mins=Math.ceil(ms/60000), h=Math.floor(mins/60), m=mins%60;
+ return h?`${h} hr${h===1?'':'s'} ${m?m+' min':''}`.trim():`${m} min`;
+}
+function logsFor(id){ return state.logs.filter(x=>x.med===id).sort((a,b)=>a.time-b.time); }
+function scheduleFor(med){
+ const logs=logsFor(med.id);
+ if(!logs.length) return {logs, next:null, start:null, end:null};
+ const start=logs[0].time;
+ const end=med.intervalMin?start + med.intervalMin*60000*(med.max-1):start;
+ const nextIndex=logs.length;
+ const next = med.intervalMin && nextIndex<med.max ? start + med.intervalMin*60000*nextIndex : null;
+ return {logs,start,end,next};
+}
+function statusFor(med){
+ const sch=scheduleFor(med), now=Date.now(), count=sch.logs.length;
+ if(count>=med.max) return {cls:'stop',title:'Daily count complete',detail:`${count} of ${med.max} recorded today.`,enabled:false};
+ if(count===0){
+   return {cls:'ok',title:med.mode==='prn'?'Available if needed':'Ready to start today',detail: med.id==='senna'?'Record the morning dose when taken.':'The first dose starts today’s 16-hour schedule.',enabled:true};
+ }
+ if(!sch.next){
+   return {cls:'stop',title:'No more doses scheduled today',detail:`${count} of ${med.max} recorded.`,enabled:false};
+ }
+ const remaining=sch.next-now;
+ if(remaining<=0){
+   return {cls:'ok',title:med.mode==='prn'?'Available again if needed':'Next dose is due',detail:`Target time: ${fmtTime(sch.next)} • ${count} of ${med.max} taken`,enabled:true};
+ }
+ return {cls:'wait',title:`Wait ${fmtDur(remaining)}`,detail:`Next target: ${fmtTime(sch.next)} • ${count} of ${med.max} taken`,enabled:false};
+}
+function render(){
+ const cards=document.getElementById('cards');
+ cards.innerHTML='';
+ meds.forEach(med=>{
+  const sch=scheduleFor(med), st=statusFor(med);
+  const c=document.createElement('div'); c.className='card';
+  let spanText='';
+  if(sch.start && med.max>1) spanText=`<div class="small">Today: ${fmtTime(sch.start)} → ${fmtTime(sch.end)}</div>`;
+  c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div>
+  <div class="status ${st.cls}">${st.title}</div>
+  <div class="detail">${st.detail}</div>${spanText}
+  <button class="take" ${st.enabled?'':'disabled'}>${med.mode==='prn'?'I Took This':'Taken'}</button>`;
+  c.querySelector('button').addEventListener('click',()=>takeDose(med.id));
+  cards.appendChild(c);
+ });
+ renderHistory();
+ scheduleAlerts();
+}
+function takeDose(id){
+ const med=meds.find(m=>m.id===id); if(!med) return;
+ const st=statusFor(med); if(!st.enabled) return;
+ state.logs.push({id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),med:id,time:Date.now()});
+ save(); render();
+}
+function renderHistory(){
+ const box=document.getElementById('history');
+ const rows=[...state.logs].sort((a,b)=>b.time-a.time);
+ if(!rows.length){ box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>'; return; }
+ box.innerHTML='';
+ rows.forEach(x=>{
+  const med=meds.find(m=>m.id===x.med);
+  const r=document.createElement('div');r.className='hist-row';
+  r.innerHTML=`<span><strong>${med?med.name:x.med}</strong></span><span>${fmtTime(x.time)}</span>`;
+  box.appendChild(r);
+ });
+}
+function undo(){
+ if(!state.logs.length) return;
+ const last=[...state.logs].sort((a,b)=>b.time-a.time)[0];
+ state.logs=state.logs.filter(x=>x.id!==last.id);
+ save();render();
+}
+function clearToday(){
+ if(confirm('Reset all of today’s recorded doses?')){
+  state=freshState();save();render();
+ }
+}
+async function enableAlerts(){
+ if(!('Notification' in window)){ alert('This browser does not support web notifications.'); return; }
+ const p=await Notification.requestPermission();
+ if(p==='granted'){ new Notification('Medication Timer',{body:'Alerts enabled while this web app is running.'}); scheduleAlerts(); }
+}
+function notify(med, when){
+ const key=`${med.id}:${when}`;
+ if(state.notified[key]) return;
+ state.notified[key]=true; save();
+ const body=med.mode==='prn'?'You may take this again if needed.':'The next scheduled dose time has arrived.';
+ if('Notification' in window && Notification.permission==='granted'){
+  try{ new Notification(`${med.name}: ${med.mode==='prn'?'available again':'dose due'}`,{body}); }catch(e){}
+ }
+ if(navigator.vibrate) navigator.vibrate([250,150,250]);
+}
+function scheduleAlerts(){
+ alertTimers.forEach(clearTimeout); alertTimers=[];
+ const now=Date.now();
+ meds.forEach(med=>{
+  const sch=scheduleFor(med);
+  if(sch.next && sch.next>now){
+   const delay=sch.next-now;
+   if(delay<2147483647){
+    alertTimers.push(setTimeout(()=>{notify(med,sch.next);render();},delay));
+   }
+  }else if(sch.next && sch.next<=now){
+   notify(med,sch.next);
+  }
+ });
+}
+function dayRolloverCheck(){
+ if(state.day!==localDayKey()){ state=freshState();save();render(); }
+}
+document.getElementById('notifyBtn').addEventListener('click',enableAlerts);
+document.getElementById('undoBtn').addEventListener('click',undo);
+document.getElementById('clearBtn').addEventListener('click',clearToday);
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+render();
+tickHandle=setInterval(()=>{dayRolloverCheck();render();},30000);
+</script>
+</body>
+</html>
