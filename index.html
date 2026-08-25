@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#1f2937">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>Medication Timer — PUSH TEST</title>
+<title>Medication Timer — PUSH TEST v2</title>
 <style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{margin:0;background:#f3f4f6;color:#111827}.wrap{max-width:760px;margin:0 auto;padding:16px 14px 40px}
@@ -25,8 +25,8 @@ button{width:100%;min-height:50px;border:0;border-radius:12px;font-size:17px;fon
 </head>
 <body>
 <div class="wrap">
-<h1>Medication Timer — PUSH TEST</h1>
-<p class="sub">Accelerated test build for verifying true background Web Push on Android and iPhone.</p>
+<h1>Medication Timer — PUSH TEST v2</h1>
+<p class="sub">Accelerated test build for verifying true background Web Push on Android and iPhone. Each recorded dose starts the next test interval from the actual time that dose was recorded.</p>
 <div class="banner"><strong>TEST BUILD ONLY:</strong> These intervals are intentionally shortened to minutes. Do not use this build for actual medication timing.</div>
 <div class="pushbox"><strong>Background alert test:</strong> Tap <em>Enable Background Alerts</em>, allow notifications, record a dose, then completely close the app. The Cloudflare Worker should send the next reminder even while the PWA is closed. Delivery may be roughly a minute late because the Worker checks once per minute.</div>
 <div class="toolbar"><button id="notifyBtn" class="secondary">Enable Background Alerts</button><button id="undoBtn" class="secondary">Undo Last Dose</button></div>
@@ -46,7 +46,7 @@ const meds = [
  {id:'aspirin',name:'Aspirin',desc:'AM + PM • TEST: 4 min',max:2,intervalMin:4,mode:'scheduled'},
  {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'}
 ];
-const KEY='medTimerPushTestV1';
+const KEY='medTimerPushTestV2';
 const WORKER_URL=(window.MED_TIMER_CONFIG&&window.MED_TIMER_CONFIG.workerUrl||'').replace(/\/$/,'');
 let state=load();
 
@@ -58,9 +58,9 @@ function save(){localStorage.setItem(KEY,JSON.stringify(state))}
 function fmtTime(ts){return new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'})}
 function fmtDur(ms){if(ms<=0)return'now';const sec=Math.ceil(ms/1000),m=Math.floor(sec/60),s=sec%60;return m?`${m} min ${s} sec`:`${s} sec`}
 function logsFor(id){return state.logs.filter(x=>x.med===id).sort((a,b)=>a.time-b.time)}
-function scheduleFor(med){const logs=logsFor(med.id);if(!logs.length)return{logs,next:null,start:null,end:null};const start=logs[0].time,end=med.intervalMin?start+med.intervalMin*60000*(med.max-1):start,nextIndex=logs.length,next=med.intervalMin&&nextIndex<med.max?start+med.intervalMin*60000*nextIndex:null;return{logs,start,end,next}}
+function scheduleFor(med){const logs=logsFor(med.id);if(!logs.length)return{logs,next:null,start:null,last:null,end:null};const start=logs[0].time,last=logs[logs.length-1].time,next=med.intervalMin&&logs.length<med.max?last+med.intervalMin*60000:null,end=med.intervalMin?last+med.intervalMin*60000*(med.max-logs.length):last;return{logs,start,last,end,next}}
 function statusFor(med){const sch=scheduleFor(med),now=Date.now(),count=sch.logs.length;if(count>=med.max)return{cls:'stop',title:'Daily count complete',detail:`${count} of ${med.max} recorded today.`,enabled:false};if(count===0)return{cls:'ok',title:med.mode==='prn'?'Ready to record if taken':'Ready to start test',detail:med.id==='senna'?'Record the morning entry.':'The first recorded dose starts this medication’s accelerated test schedule.',enabled:true};if(!sch.next)return{cls:'stop',title:'No more test reminders today',detail:`${count} of ${med.max} recorded.`,enabled:false};const remaining=sch.next-now;if(remaining<=0)return{cls:'ok',title:'Reminder time reached',detail:`Test target: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:true};return{cls:'wait',title:`Wait ${fmtDur(remaining)}`,detail:`Next test target: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:false}}
-function render(){const cards=document.getElementById('cards');cards.innerHTML='';meds.forEach(med=>{const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');c.className='card';const span=sch.start&&med.max>1?`<div class="small">Test span: ${fmtTime(sch.start)} → ${fmtTime(sch.end)}</div>`:'';c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${span}<button class="take" ${st.enabled?'':'disabled'}>${med.mode==='prn'?'I Took This':'Taken'}</button>`;c.querySelector('button').addEventListener('click',()=>takeDose(med.id));cards.appendChild(c)});renderHistory();updateAlertButton()}
+function render(){const cards=document.getElementById('cards');cards.innerHTML='';meds.forEach(med=>{const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');c.className='card';const span=sch.last&&med.max>1?`<div class="small">Last recorded: ${fmtTime(sch.last)} • projected final target: ${fmtTime(sch.end)}</div>`:'';c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${span}<button class="take" ${st.enabled?'':'disabled'}>${med.mode==='prn'?'I Took This':'Taken'}</button>`;c.querySelector('button').addEventListener('click',()=>takeDose(med.id));cards.appendChild(c)});renderHistory();updateAlertButton()}
 function renderHistory(){const box=document.getElementById('history'),rows=[...state.logs].sort((a,b)=>b.time-a.time);if(!rows.length){box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>';return}box.innerHTML='';rows.forEach(x=>{const med=meds.find(m=>m.id===x.med),r=document.createElement('div');r.className='hist-row';r.innerHTML=`<span><strong>${med?med.name:x.med}</strong>${x.jobId?'<div class="small">Background reminder scheduled</div>':''}</span><span>${fmtTime(x.time)}</span>`;box.appendChild(r)})}
 function urlBase64ToUint8Array(base64String){const padding='='.repeat((4-base64String.length%4)%4),base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
 async function getRegistration(){if(!('serviceWorker'in navigator))throw new Error('Service workers are not supported on this device/browser.');return navigator.serviceWorker.register('./sw.js')}
