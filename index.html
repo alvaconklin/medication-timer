@@ -26,7 +26,7 @@ button{width:100%;min-height:50px;border:0;border-radius:12px;font-size:17px;fon
 <body>
 <div class="wrap">
 <h1>Medication Timer</h1>
-<p class="sub">Tap a medication when it is taken. Each recorded dose starts the timer for the next reminder. Each recorded dose starts the next test interval from the actual time that dose was recorded.</p>
+<p class="sub">Tap a medication when it is taken. Timed medications start the next interval from the actual time the dose was recorded. Celebrex and Aspirin use separate AM and PM dose windows.</p>
 <div class="banner"><strong>Important:</strong> This app uses the timing schedule selected for this medication tracker. If a prescription label, discharge instruction, pharmacist, or clinician gives different timing or daily limits, follow those instructions instead.</div>
 <div class="pushbox"><strong>Background alerts:</strong> Enable them to receive reminders when the app is closed. Tap <em>Disable Background Alerts</em> at any time to stop push reminders without changing the medication log or timers.</div>
 <div class="toolbar"><button id="notifyBtn" class="secondary">Enable Background Alerts</button><button id="undoBtn" class="secondary">Undo Last Dose</button></div>
@@ -38,46 +38,477 @@ button{width:100%;min-height:50px;border:0;border-radius:12px;font-size:17px;fon
 <script src="config.js"></script>
 <script>
 const meds = [
- {id:'celebrex',name:'Celebrex',desc:'AM + PM',max:2,intervalMin:960,mode:'scheduled'},
- {id:'oxy',name:'Oxy',desc:'Up to 4×',max:4,intervalMin:320,mode:'scheduled'},
- {id:'tylenol',name:'Tylenol',desc:'Up to 4×',max:4,intervalMin:320,mode:'scheduled'},
- {id:'robaxin',name:'Robaxin',desc:'Muscle • up to 3× as needed',max:3,intervalMin:480,mode:'prn'},
- {id:'zofran',name:'Zofran',desc:'Stomach • up to 3× as needed',max:3,intervalMin:480,mode:'prn'},
- {id:'aspirin',name:'Aspirin',desc:'AM + PM',max:2,intervalMin:960,mode:'scheduled'},
- {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'}
+  {id:'celebrex',name:'Celebrex',desc:'AM after 6:00 AM • PM after 6:00 PM',max:2,intervalMin:null,mode:'am_pm'},
+  {id:'oxy',name:'Oxy',desc:'Up to 4×',max:4,intervalMin:320,mode:'scheduled'},
+  {id:'tylenol',name:'Tylenol',desc:'Up to 4×',max:4,intervalMin:320,mode:'scheduled'},
+  {id:'robaxin',name:'Robaxin',desc:'Muscle • up to 3× as needed',max:3,intervalMin:480,mode:'prn'},
+  {id:'zofran',name:'Zofran',desc:'Stomach • up to 3× as needed',max:3,intervalMin:480,mode:'prn'},
+  {id:'aspirin',name:'Aspirin',desc:'AM after 6:00 AM • PM after 6:00 PM',max:2,intervalMin:null,mode:'am_pm'},
+  {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'}
 ];
+
 const KEY='medTimerProdV1';
 const WORKER_URL=(window.MED_TIMER_CONFIG&&window.MED_TIMER_CONFIG.workerUrl||'').replace(/\/$/,'');
 let state=load();
 
-function msg(text,bad=false){const e=document.getElementById('message');e.textContent=text;e.style.color=bad?'#b91c1c':'#047857'}
-function localDayKey(d=new Date()){const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');return `${y}-${m}-${day}`}
+function msg(text,bad=false){
+  const e=document.getElementById('message');
+  e.textContent=text;
+  e.style.color=bad?'#b91c1c':'#047857';
+}
+
+function localDayKey(d=new Date()){
+  const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+
 function freshState(){return {day:localDayKey(),logs:[]}}
-function load(){try{const s=JSON.parse(localStorage.getItem(KEY));return !s||s.day!==localDayKey()?freshState():s}catch(_){return freshState()}}
+
+function load(){
+  try{
+    const s=JSON.parse(localStorage.getItem(KEY));
+    return !s||s.day!==localDayKey()?freshState():s;
+  }catch(_){
+    return freshState();
+  }
+}
+
 function save(){localStorage.setItem(KEY,JSON.stringify(state))}
-function fmtTime(ts){return new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'})}
-function fmtDur(ms){if(ms<=0)return'now';const sec=Math.ceil(ms/1000),m=Math.floor(sec/60),s=sec%60;return m?`${m} min ${s} sec`:`${s} sec`}
-function logsFor(id){return state.logs.filter(x=>x.med===id).sort((a,b)=>a.time-b.time)}
-function scheduleFor(med){const logs=logsFor(med.id);if(!logs.length)return{logs,next:null,start:null,last:null,end:null};const start=logs[0].time,last=logs[logs.length-1].time,next=med.intervalMin&&logs.length<med.max?last+med.intervalMin*60000:null,end=med.intervalMin?last+med.intervalMin*60000*(med.max-logs.length):last;return{logs,start,last,end,next}}
-function statusFor(med){const sch=scheduleFor(med),now=Date.now(),count=sch.logs.length;if(count>=med.max)return{cls:'stop',title:'Daily count complete',detail:`${count} of ${med.max} recorded today.`,enabled:false};if(count===0)return{cls:'ok',title:med.mode==='prn'?'Ready to record if taken':'Ready to record',detail:med.id==='senna'?'Record the morning entry.':'Record the dose when it is taken.',enabled:true};if(!sch.next)return{cls:'stop',title:'No more reminders today',detail:`${count} of ${med.max} recorded.`,enabled:false};const remaining=sch.next-now;if(remaining<=0)return{cls:'ok',title:'Reminder time reached',detail:`Next: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:true};return{cls:'wait',title:`Wait ${fmtDur(remaining)}`,detail:`Next: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:false}}
-function render(){const cards=document.getElementById('cards');cards.innerHTML='';meds.forEach(med=>{const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');c.className='card';const span=sch.last&&med.max>1?`<div class="small">Last recorded: ${fmtTime(sch.last)} • projected final target: ${fmtTime(sch.end)}</div>`:'';c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${span}<button class="take" ${st.enabled?'':'disabled'}>${med.mode==='prn'?'I Took This':'Taken'}</button>`;c.querySelector('button').addEventListener('click',()=>takeDose(med.id));cards.appendChild(c)});renderHistory();updateAlertButton()}
-function renderHistory(){const box=document.getElementById('history'),rows=[...state.logs].sort((a,b)=>b.time-a.time);if(!rows.length){box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>';return}box.innerHTML='';rows.forEach(x=>{const med=meds.find(m=>m.id===x.med),r=document.createElement('div');r.className='hist-row';r.innerHTML=`<span><strong>${med?med.name:x.med}</strong>${x.jobId?'<div class="small">Background reminder scheduled</div>':''}</span><span>${fmtTime(x.time)}</span>`;box.appendChild(r)})}
-function urlBase64ToUint8Array(base64String){const padding='='.repeat((4-base64String.length%4)%4),base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
-async function getRegistration(){if(!('serviceWorker'in navigator))throw new Error('Service workers are not supported on this device/browser.');return navigator.serviceWorker.register('./sw.js')}
-async function getPushSubscription(create=false){const reg=await getRegistration();let sub=await reg.pushManager.getSubscription();if(!sub&&create){if(!WORKER_URL||WORKER_URL.includes('PASTE-YOUR'))throw new Error('Worker URL has not been configured in config.js.');const r=await fetch(`${WORKER_URL}/vapid-public-key`);if(!r.ok)throw new Error('Could not retrieve the VAPID public key from the Worker.');const {publicKey}=await r.json();sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(publicKey)})}return sub}
-async function enableAlerts(){try{if(!('Notification'in window))throw new Error('Notifications are not supported here.');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('Notification permission was not granted.');const sub=await getPushSubscription(true);if(!sub)throw new Error('Push subscription could not be created.');await ensurePendingReminders();msg('Background alerts enabled.');render()}catch(e){msg(e.message||String(e),true)}}
-async function schedulePush(med,dueAt){const sub=await getPushSubscription(false);if(!sub)return null;const body=med.mode==='prn'?`${med.name} is available again if needed. Check the medication instructions before taking another dose.`:`${med.name} next reminder time has been reached.`;const r=await fetch(`${WORKER_URL}/schedule`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON(),dueAt,title:`${med.name} reminder`,body,tag:`med-${med.id}`})});if(!r.ok){const t=await r.text();throw new Error(`Worker schedule failed: ${t}`)}return(await r.json()).jobId}
-async function cancelPush(jobId){if(!jobId||!WORKER_URL)return true;try{const r=await fetch(`${WORKER_URL}/cancel`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId})});return r.ok}catch(_){return false}}
-async function disableAlerts(){try{const jobIds=[...new Set(state.logs.map(x=>x.jobId).filter(Boolean))];await Promise.all(jobIds.map(cancelPush));state.logs.forEach(x=>{x.jobId=null});save();const sub=await getPushSubscription(false);if(sub)await sub.unsubscribe();msg('Background alerts disabled. Medication timers and history are still active.');render()}catch(e){msg(`Could not disable background alerts: ${e.message||String(e)}`,true)}}
-async function toggleAlerts(){try{const sub=await getPushSubscription(false);if(sub){await disableAlerts()}else{await enableAlerts()}}catch(e){msg(e.message||String(e),true)}}
-async function takeDose(id){const med=meds.find(m=>m.id===id);if(!med)return;const st=statusFor(med);if(!st.enabled)return;const entry={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),med:id,time:Date.now(),jobId:null};state.logs.push(entry);save();render();const sch=scheduleFor(med);if(sch.next&&sch.next>Date.now()){try{entry.jobId=await schedulePush(med,sch.next);save();msg(entry.jobId?`Background reminder scheduled for ${med.name} at ${fmtTime(sch.next)}.`:'Dose recorded. Background alerts are not enabled.');render()}catch(e){msg(`Dose recorded, but push scheduling failed: ${e.message}`,true)}}}
-async function ensurePendingReminders(){for(const med of meds){const sch=scheduleFor(med);if(!sch.next||sch.next<=Date.now()||!sch.logs.length)continue;const last=sch.logs[sch.logs.length-1];if(last.jobId)continue;try{last.jobId=await schedulePush(med,sch.next);save()}catch(e){msg(`Could not schedule ${med.name}: ${e.message}`,true)}}}
-async function undo(){if(!state.logs.length)return;const last=[...state.logs].sort((a,b)=>b.time-a.time)[0];await cancelPush(last.jobId);state.logs=state.logs.filter(x=>x.id!==last.id);save();msg('Last recorded dose undone.');render()}
-async function clearToday(){if(!confirm('Reset all of today’s recorded doses?'))return;await Promise.all(state.logs.map(x=>cancelPush(x.jobId)));state=freshState();save();msg('Today’s log reset.');render()}
-async function updateAlertButton(){const b=document.getElementById('notifyBtn');try{const s=await getPushSubscription(false);b.textContent=s?'Disable Background Alerts':'Enable Background Alerts';b.disabled=false}catch(_){b.textContent='Enable Background Alerts';b.disabled=false}}
-function dayRolloverCheck(){if(state.day!==localDayKey()){state=freshState();save();render()}}
-document.getElementById('notifyBtn').addEventListener('click',toggleAlerts);document.getElementById('undoBtn').addEventListener('click',undo);document.getElementById('clearBtn').addEventListener('click',clearToday);
-getRegistration().catch(()=>{});render();setInterval(()=>{dayRolloverCheck();render()},1000);
+
+function fmtTime(ts){
+  return new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+}
+
+function fmtDur(ms){
+  if(ms<=0)return'now';
+  const mins=Math.ceil(ms/60000),h=Math.floor(mins/60),m=mins%60;
+  return h?`${h} hr${h===1?'':'s'}${m?` ${m} min`:''}`:`${m} min`;
+}
+
+function todayAt(hour,minute=0){
+  const d=new Date();
+  d.setHours(hour,minute,0,0);
+  return d.getTime();
+}
+
+function logsFor(id){
+  return state.logs.filter(x=>x.med===id).sort((a,b)=>a.time-b.time);
+}
+
+function inferredSlot(entry,index,all){
+  if(entry.slot==='am'||entry.slot==='pm')return entry.slot;
+  if(all.length>=2)return index===0?'am':'pm';
+  return new Date(entry.time).getHours()<18?'am':'pm';
+}
+
+function amPmInfo(med){
+  const logs=logsFor(med.id);
+  let am=null,pm=null;
+  logs.forEach((entry,index)=>{
+    const slot=inferredSlot(entry,index,logs);
+    if(slot==='am'&&!am)am=entry;
+    if(slot==='pm'&&!pm)pm=entry;
+  });
+  return {logs,am,pm};
+}
+
+function scheduleFor(med){
+  if(med.mode==='am_pm'){
+    const info=amPmInfo(med);
+    const now=Date.now(), sixAm=todayAt(6), sixPm=todayAt(18);
+    let next=null;
+    if(!info.am && now<sixAm) next=sixAm;
+    else if(info.am && !info.pm) next=sixPm;
+    else if(!info.pm && now<sixPm && now>=sixAm) next=sixPm;
+    return {logs:info.logs,start:info.logs[0]?.time||null,last:info.logs.at(-1)?.time||null,end:null,next,am:info.am,pm:info.pm};
+  }
+
+  const logs=logsFor(med.id);
+  if(!logs.length)return{logs,next:null,start:null,last:null,end:null};
+  const start=logs[0].time,last=logs[logs.length-1].time;
+  const next=med.intervalMin&&logs.length<med.max?last+med.intervalMin*60000:null;
+  const end=med.intervalMin?last+med.intervalMin*60000*(med.max-logs.length):last;
+  return{logs,start,last,end,next};
+}
+
+function amPmStatus(med){
+  const {am,pm}=amPmInfo(med);
+  const now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);
+
+  if(am&&pm){
+    return {cls:'stop',title:'AM and PM recorded',detail:`AM ${fmtTime(am.time)} • PM ${fmtTime(pm.time)}`};
+  }
+  if(now<sixAm){
+    return {cls:'wait',title:`AM available in ${fmtDur(sixAm-now)}`,detail:'AM dose window opens at 6:00 AM.'};
+  }
+  if(now<sixPm){
+    if(am){
+      return {cls:'wait',title:`PM available in ${fmtDur(sixPm-now)}`,detail:`AM recorded at ${fmtTime(am.time)}. PM opens at 6:00 PM.`};
+    }
+    return {cls:'ok',title:'AM dose available',detail:'Record the AM dose any time before 6:00 PM.'};
+  }
+  if(pm){
+    return {cls:'stop',title:'PM recorded',detail:am?`AM ${fmtTime(am.time)} • PM ${fmtTime(pm.time)}`:`PM recorded at ${fmtTime(pm.time)}. AM window was missed.`};
+  }
+  return {cls:'ok',title:'PM dose available',detail:am?`AM recorded at ${fmtTime(am.time)}. PM may be recorded now.`:'PM may be recorded now. AM window was missed.'};
+}
+
+function statusFor(med){
+  if(med.mode==='am_pm')return amPmStatus(med);
+
+  const sch=scheduleFor(med),now=Date.now(),count=sch.logs.length;
+  if(count>=med.max)return{cls:'stop',title:'Daily count complete',detail:`${count} of ${med.max} recorded today.`,enabled:false};
+  if(count===0)return{cls:'ok',title:med.mode==='prn'?'Ready to record if taken':'Ready to record',detail:med.id==='senna'?'Record the morning entry.':'Record the dose when it is taken.',enabled:true};
+  if(!sch.next)return{cls:'stop',title:'No more reminders today',detail:`${count} of ${med.max} recorded.`,enabled:false};
+  const remaining=sch.next-now;
+  if(remaining<=0)return{cls:'ok',title:'Reminder time reached',detail:`Next: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:true};
+  return{cls:'wait',title:`Wait ${fmtDur(remaining)}`,detail:`Next: ${fmtTime(sch.next)} • ${count} of ${med.max} recorded`,enabled:false};
+}
+
+function renderAmPmButtons(c,med){
+  const {am,pm}=amPmInfo(med);
+  const now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);
+
+  const wrap=document.createElement('div');
+  wrap.style.display='grid';
+  wrap.style.gridTemplateColumns='1fr 1fr';
+  wrap.style.gap='10px';
+
+  const amBtn=document.createElement('button');
+  amBtn.className='take';
+  amBtn.textContent=am?'AM Taken':'AM Taken';
+  amBtn.disabled=!!am || now<sixAm || now>=sixPm;
+  amBtn.addEventListener('click',()=>takeDose(med.id,'am'));
+
+  const pmBtn=document.createElement('button');
+  pmBtn.className='take';
+  pmBtn.textContent=pm?'PM Taken':'PM Taken';
+  pmBtn.disabled=!!pm || now<sixPm;
+  pmBtn.addEventListener('click',()=>takeDose(med.id,'pm'));
+
+  wrap.append(amBtn,pmBtn);
+  c.appendChild(wrap);
+}
+
+function render(){
+  const cards=document.getElementById('cards');
+  cards.innerHTML='';
+
+  meds.forEach(med=>{
+    const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');
+    c.className='card';
+
+    const count=sch.logs.length;
+    let extra='';
+    if(med.mode==='am_pm'){
+      const info=amPmInfo(med);
+      const parts=[];
+      if(info.am)parts.push(`AM: ${fmtTime(info.am.time)}`);
+      if(info.pm)parts.push(`PM: ${fmtTime(info.pm.time)}`);
+      if(parts.length)extra=`<div class="small">${parts.join(' • ')}</div>`;
+    }else if(sch.last&&med.max>1){
+      extra=`<div class="small">Last recorded: ${fmtTime(sch.last)}${sch.end?` • projected final target: ${fmtTime(sch.end)}`:''}</div>`;
+    }
+
+    c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${count}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${extra}`;
+
+    if(med.mode==='am_pm'){
+      renderAmPmButtons(c,med);
+    }else{
+      const b=document.createElement('button');
+      b.className='take';
+      b.disabled=!st.enabled;
+      b.textContent=med.mode==='prn'?'I Took This':'Taken';
+      b.addEventListener('click',()=>takeDose(med.id));
+      c.appendChild(b);
+    }
+    cards.appendChild(c);
+  });
+
+  renderHistory();
+  updateAlertButton();
+}
+
+function renderHistory(){
+  const box=document.getElementById('history'),rows=[...state.logs].sort((a,b)=>b.time-a.time);
+  if(!rows.length){
+    box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>';
+    return;
+  }
+  box.innerHTML='';
+  rows.forEach(x=>{
+    const med=meds.find(m=>m.id===x.med),r=document.createElement('div');
+    r.className='hist-row';
+    let label=med?med.name:x.med;
+    if(med&&med.mode==='am_pm'){
+      const all=logsFor(med.id);
+      const idx=all.findIndex(e=>e.id===x.id);
+      const slot=inferredSlot(x,Math.max(idx,0),all).toUpperCase();
+      label+=` (${slot})`;
+    }
+    r.innerHTML=`<span><strong>${label}</strong>${x.jobId?'<div class="small">Background reminder scheduled</div>':''}</span><span>${fmtTime(x.time)}</span>`;
+    box.appendChild(r);
+  });
+}
+
+function urlBase64ToUint8Array(base64String){
+  const padding='='.repeat((4-base64String.length%4)%4),base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64),out=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+  return out;
+}
+
+async function getRegistration(){
+  if(!('serviceWorker'in navigator))throw new Error('Service workers are not supported on this device/browser.');
+  return navigator.serviceWorker.register('./sw.js');
+}
+
+async function getPushSubscription(create=false){
+  const reg=await getRegistration();
+  if(!reg.pushManager){
+    throw new Error('Background alerts on iPhone require installing Medication Timer to the Home Screen. In Safari, tap Share → Add to Home Screen, then open it from the Home Screen icon.');
+  }
+  let sub=await reg.pushManager.getSubscription();
+  if(!sub&&create){
+    if(!WORKER_URL||WORKER_URL.includes('PASTE-YOUR'))throw new Error('Worker URL has not been configured in config.js.');
+    const r=await fetch(`${WORKER_URL}/vapid-public-key`);
+    if(!r.ok)throw new Error('Could not retrieve the VAPID public key from the Worker.');
+    const {publicKey}=await r.json();
+    sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(publicKey)});
+  }
+  return sub;
+}
+
+async function enableAlerts(){
+  try{
+    if(!('Notification'in window))throw new Error('Notifications are not supported here.');
+    const permission=await Notification.requestPermission();
+    if(permission!=='granted')throw new Error('Notification permission was not granted.');
+    const sub=await getPushSubscription(true);
+    if(!sub)throw new Error('Push subscription could not be created.');
+    await ensurePendingReminders();
+    msg('Background alerts enabled.');
+    render();
+  }catch(e){
+    msg(e.message||String(e),true);
+  }
+}
+
+async function schedulePush(med,dueAt,slot=null){
+  const sub=await getPushSubscription(false);
+  if(!sub)return null;
+
+  let body,title,tag;
+  if(med.mode==='am_pm'){
+    const label=slot==='pm'?'PM':'AM';
+    body=`${med.name} ${label} dose window is now open.`;
+    title=`${med.name} ${label} reminder`;
+    tag=`med-${med.id}-${label.toLowerCase()}`;
+  }else{
+    body=med.mode==='prn'
+      ?`${med.name} is available again if needed. Check the medication instructions before taking another dose.`
+      :`${med.name} next reminder time has been reached.`;
+    title=`${med.name} reminder`;
+    tag=`med-${med.id}`;
+  }
+
+  const r=await fetch(`${WORKER_URL}/schedule`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({subscription:sub.toJSON(),dueAt,title,body,tag})
+  });
+
+  if(!r.ok){
+    const t=await r.text();
+    throw new Error(`Worker schedule failed: ${t}`);
+  }
+  return(await r.json()).jobId;
+}
+
+async function cancelPush(jobId){
+  if(!jobId||!WORKER_URL)return true;
+  try{
+    const r=await fetch(`${WORKER_URL}/cancel`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({jobId})
+    });
+    return r.ok;
+  }catch(_){
+    return false;
+  }
+}
+
+async function disableAlerts(){
+  try{
+    const jobIds=[...new Set(state.logs.map(x=>x.jobId).filter(Boolean))];
+    await Promise.all(jobIds.map(cancelPush));
+    state.logs.forEach(x=>{x.jobId=null});
+    save();
+    const sub=await getPushSubscription(false);
+    if(sub)await sub.unsubscribe();
+    msg('Background alerts disabled. Medication timers and history are still active.');
+    render();
+  }catch(e){
+    msg(`Could not disable background alerts: ${e.message||String(e)}`,true);
+  }
+}
+
+async function toggleAlerts(){
+  try{
+    const sub=await getPushSubscription(false);
+    if(sub)await disableAlerts();
+    else await enableAlerts();
+  }catch(e){
+    msg(e.message||String(e),true);
+  }
+}
+
+async function takeDose(id,slot=null){
+  const med=meds.find(m=>m.id===id);
+  if(!med)return;
+
+  if(med.mode==='am_pm'){
+    const info=amPmInfo(med),now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);
+
+    if(slot==='am'){
+      if(info.am||now<sixAm||now>=sixPm)return;
+    }else if(slot==='pm'){
+      if(info.pm||now<sixPm)return;
+      if(info.am&&info.am.jobId){
+        await cancelPush(info.am.jobId);
+        info.am.jobId=null;
+      }
+    }else return;
+
+    const entry={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),med:id,time:Date.now(),slot,jobId:null};
+    state.logs.push(entry);
+    save();
+    render();
+
+    if(slot==='am'){
+      const dueAt=sixPm;
+      if(dueAt>Date.now()){
+        try{
+          entry.jobId=await schedulePush(med,dueAt,'pm');
+          save();
+          msg(entry.jobId?`PM background reminder scheduled for ${med.name} at ${fmtTime(dueAt)}.`:'AM dose recorded. Background alerts are not enabled.');
+          render();
+        }catch(e){
+          msg(`AM dose recorded, but PM push scheduling failed: ${e.message}`,true);
+        }
+      }
+    }else{
+      msg(`${med.name} PM dose recorded.`);
+    }
+    return;
+  }
+
+  const st=statusFor(med);
+  if(!st.enabled)return;
+
+  const entry={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),med:id,time:Date.now(),jobId:null};
+  state.logs.push(entry);
+  save();
+  render();
+
+  const sch=scheduleFor(med);
+  if(sch.next&&sch.next>Date.now()){
+    try{
+      entry.jobId=await schedulePush(med,sch.next);
+      save();
+      msg(entry.jobId?`Background reminder scheduled for ${med.name} at ${fmtTime(sch.next)}.`:'Dose recorded. Background alerts are not enabled.');
+      render();
+    }catch(e){
+      msg(`Dose recorded, but push scheduling failed: ${e.message}`,true);
+    }
+  }
+}
+
+async function ensurePendingReminders(){
+  for(const med of meds){
+    if(med.mode==='am_pm'){
+      const info=amPmInfo(med);
+      const sixPm=todayAt(18);
+      if(info.am&&!info.pm&&sixPm>Date.now()&&!info.am.jobId){
+        try{
+          info.am.jobId=await schedulePush(med,sixPm,'pm');
+          save();
+        }catch(e){
+          msg(`Could not schedule ${med.name} PM reminder: ${e.message}`,true);
+        }
+      }
+      continue;
+    }
+
+    const sch=scheduleFor(med);
+    if(!sch.next||sch.next<=Date.now()||!sch.logs.length)continue;
+    const last=sch.logs[sch.logs.length-1];
+    if(last.jobId)continue;
+    try{
+      last.jobId=await schedulePush(med,sch.next);
+      save();
+    }catch(e){
+      msg(`Could not schedule ${med.name}: ${e.message}`,true);
+    }
+  }
+}
+
+async function undo(){
+  if(!state.logs.length)return;
+  const last=[...state.logs].sort((a,b)=>b.time-a.time)[0];
+  await cancelPush(last.jobId);
+  state.logs=state.logs.filter(x=>x.id!==last.id);
+  save();
+  msg('Last recorded dose undone.');
+  render();
+  try{
+    const sub=await getPushSubscription(false);
+    if(sub)await ensurePendingReminders();
+  }catch(_){}
+}
+
+async function clearToday(){
+  if(!confirm('Reset all of today’s recorded doses?'))return;
+  await Promise.all(state.logs.map(x=>cancelPush(x.jobId)));
+  state=freshState();
+  save();
+  msg('Today’s log reset.');
+  render();
+}
+
+async function updateAlertButton(){
+  const b=document.getElementById('notifyBtn');
+  try{
+    const reg=await getRegistration();
+    if(!reg.pushManager){
+      b.textContent='Enable Background Alerts';
+      b.disabled=false;
+      return;
+    }
+    const s=await reg.pushManager.getSubscription();
+    b.textContent=s?'Disable Background Alerts':'Enable Background Alerts';
+    b.disabled=false;
+  }catch(_){
+    b.textContent='Enable Background Alerts';
+    b.disabled=false;
+  }
+}
+
+function dayRolloverCheck(){
+  if(state.day!==localDayKey()){
+    state=freshState();
+    save();
+    render();
+  }
+}
+
+document.getElementById('notifyBtn').addEventListener('click',toggleAlerts);
+document.getElementById('undoBtn').addEventListener('click',undo);
+document.getElementById('clearBtn').addEventListener('click',clearToday);
+
+getRegistration().catch(()=>{});
+render();
+setInterval(()=>{dayRolloverCheck();render()},30000);
 </script>
 </body>
 </html>
