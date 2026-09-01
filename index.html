@@ -44,7 +44,8 @@ const meds = [
   {id:'robaxin',name:'Robaxin',desc:'Muscle • up to 3× as needed • at least 1 hr from Oxy',max:3,intervalMin:480,mode:'prn'},
   {id:'zofran',name:'Zofran',desc:'Stomach • up to 3× as needed',max:3,intervalMin:480,mode:'prn'},
   {id:'aspirin',name:'Aspirin',desc:'AM after 6:00 AM • PM after 6:00 PM',max:2,intervalMin:null,mode:'am_pm'},
-  {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'}
+  {id:'senna',name:'Senna',desc:'2 tablets in the morning',max:1,intervalMin:null,mode:'morning'},
+  {id:'gabapentin',name:'Gabapentin',desc:'300 mg • 1 hr before bedtime',max:1,intervalMin:null,mode:'bedtime'}
 ];
 
 const KEY='medTimerProdV1';
@@ -68,7 +69,9 @@ function freshState(persist={}){
     oxyPushJobs:Array.isArray(persist.oxyPushJobs)?persist.oxyPushJobs:[],
     lastOxyTime:Number(persist.lastOxyTime)||0,
     lastRobaxinTime:Number(persist.lastRobaxinTime)||0,
-    robaxinTimer:persist.robaxinTimer||blankRobaxinTimer()
+    robaxinTimer:persist.robaxinTimer||blankRobaxinTimer(),
+    bedtime:typeof persist.bedtime==='string'?persist.bedtime:'',
+    gabapentinJobId:persist.gabapentinJobId||null
   };
 }
 function normalizeOxySlots(raw){
@@ -100,7 +103,7 @@ function normalizeState(s){
   const latestRobaxin=robaxinEntries.sort((a,b)=>(a.time||0)-(b.time||0)).at(-1);
   if(!robaxinTimer.jobId&&latestRobaxin&&latestRobaxin.jobId){robaxinTimer.jobId=latestRobaxin.jobId;latestRobaxin.jobId=null}
 
-  return {day:s&&s.day,logs,oxySlots,oxyPushJobs,lastOxyTime,lastRobaxinTime,robaxinTimer};
+  return {day:s&&s.day,logs,oxySlots,oxyPushJobs,lastOxyTime,lastRobaxinTime,robaxinTimer,bedtime:typeof (s&&s.bedtime)==='string'?s.bedtime:'',gabapentinJobId:(s&&s.gabapentinJobId)||null};
 }
 function load(){
   try{
@@ -108,7 +111,7 @@ function load(){
     if(!raw)return freshState();
     const s=normalizeState(raw);
     if(s.day!==localDayKey()){
-      return freshState({oxySlots:s.oxySlots,oxyPushJobs:s.oxyPushJobs,lastOxyTime:s.lastOxyTime,lastRobaxinTime:s.lastRobaxinTime,robaxinTimer:s.robaxinTimer});
+      return freshState({oxySlots:s.oxySlots,oxyPushJobs:s.oxyPushJobs,lastOxyTime:s.lastOxyTime,lastRobaxinTime:s.lastRobaxinTime,robaxinTimer:s.robaxinTimer,bedtime:s.bedtime});
     }
     return s;
   }catch(_){return freshState()}
@@ -184,6 +187,59 @@ function robaxinStatus(med){
   return{cls:'ok',title:'Available if needed',detail:`${count} of ${med.max} recorded today.`,enabled:true};
 }
 
+
+/* Gabapentin bedtime medicine */
+function parseBedtimeToday(){
+  if(!state.bedtime||!/^\d{2}:\d{2}$/.test(state.bedtime))return null;
+  const [h,m]=state.bedtime.split(':').map(Number);
+  if(!Number.isInteger(h)||!Number.isInteger(m)||h<0||h>23||m<0||m>59)return null;
+  const bedtime=todayAt(h,m);
+  return {bedtime,dueAt:bedtime-60*60*1000};
+}
+function gabapentinLog(){return logsFor('gabapentin').at(-1)||null}
+function gabapentinStatus(){
+  const taken=gabapentinLog();
+  if(taken)return{cls:'stop',title:'Taken today',detail:`Gabapentin 300 mg recorded at ${fmtTime(taken.time)}.`,enabled:false};
+  const timing=parseBedtimeToday();
+  if(!timing)return{cls:'wait',title:'Set bedtime',detail:'Set a bedtime below so the app can remind 1 hour beforehand.',enabled:true};
+  const now=Date.now();
+  if(now>=timing.dueAt)return{cls:'ok',title:'Due now',detail:`300 mg • bedtime ${fmtTime(timing.bedtime)}.`,enabled:true};
+  return{cls:'wait',title:`Scheduled for ${fmtTime(timing.dueAt)}`,detail:`300 mg • 1 hour before bedtime (${fmtTime(timing.bedtime)}).`,enabled:true};
+}
+function renderGabapentinCard(med){
+  const st=gabapentinStatus(),c=document.createElement('div');c.className='card';
+  const taken=gabapentinLog();
+  c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${taken?'1/1':'0/1'}</div></div>
+  <div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>
+  <label class="small" for="bedtimeInput" style="display:block;margin-top:10px">Bedtime</label>
+  <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end">
+    <input id="bedtimeInput" type="time" value="${state.bedtime||''}" style="min-height:46px;font-size:16px;border:1px solid #9ca3af;border-radius:10px;padding:0 10px;background:inherit;color:inherit">
+    <button id="saveBedtimeBtn" class="secondary" type="button" style="width:auto;min-width:110px">Save</button>
+  </div>`;
+
+  const take=document.createElement('button');
+  take.className='take';
+  take.textContent='Taken 300 mg';
+  take.disabled=!!taken;
+  take.addEventListener('click',()=>takeDose('gabapentin'));
+  c.appendChild(take);
+
+  c.querySelector('#saveBedtimeBtn').addEventListener('click',async()=>{
+    const value=c.querySelector('#bedtimeInput').value;
+    if(!/^\d{2}:\d{2}$/.test(value)){msg('Choose a bedtime first.',true);return}
+    state.bedtime=value;
+    save();
+    try{
+      await rescheduleGabapentinPush();
+      msg(`Bedtime saved as ${fmtTime(parseBedtimeToday().bedtime)}. Gabapentin is scheduled 1 hour before bedtime.`);
+    }catch(e){
+      msg(`Bedtime saved, but the Gabapentin reminder could not be scheduled: ${e.message}`,true);
+    }
+    render();
+  });
+  return c;
+}
+
 /* Standard interval medicines */
 function scheduleFor(med){
   if(med.mode==='am_pm'){const info=amPmInfo(med),now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);let next=null;if(!info.am&&now<sixAm)next=sixAm;else if(info.am&&!info.pm)next=sixPm;else if(!info.pm&&now<sixPm&&now>=sixAm)next=sixPm;return{logs:info.logs,start:info.logs[0]?.time||null,last:info.logs.at(-1)?.time||null,end:null,next,am:info.am,pm:info.pm}}
@@ -199,9 +255,9 @@ function statusFor(med){
 function renderAmPmButtons(c,med){const {am,pm}=amPmInfo(med),now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);const wrap=document.createElement('div');wrap.style.display='grid';wrap.style.gridTemplateColumns='1fr 1fr';wrap.style.gap='10px';const amBtn=document.createElement('button');amBtn.className='take';amBtn.textContent='AM Taken';amBtn.disabled=!!am||now<sixAm||now>=sixPm;amBtn.addEventListener('click',()=>takeDose(med.id,'am'));const pmBtn=document.createElement('button');pmBtn.className='take';pmBtn.textContent='PM Taken';pmBtn.disabled=!!pm||now<sixPm;pmBtn.addEventListener('click',()=>takeDose(med.id,'pm'));wrap.append(amBtn,pmBtn);c.appendChild(wrap)}
 function render(){
   const cards=document.getElementById('cards');cards.innerHTML='';
-  meds.forEach(med=>{if(med.mode==='oxy_slots'){cards.appendChild(renderOxyCard(med));return}const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');c.className='card';let extra='';if(med.mode==='am_pm'){const info=amPmInfo(med),parts=[];if(info.am)parts.push(`AM: ${fmtTime(info.am.time)}`);if(info.pm)parts.push(`PM: ${fmtTime(info.pm.time)}`);if(parts.length)extra=`<div class="small">${parts.join(' • ')}</div>`}else if(sch.last&&med.max>1){extra=`<div class="small">Last recorded: ${fmtTime(sch.last)}${sch.end?` • projected final target: ${fmtTime(sch.end)}`:''}</div>`}c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${extra}`;if(med.mode==='am_pm')renderAmPmButtons(c,med);else{const b=document.createElement('button');b.className='take';b.disabled=!st.enabled;b.textContent=med.mode==='prn'?'I Took This':'Taken';b.addEventListener('click',()=>takeDose(med.id));c.appendChild(b)}cards.appendChild(c)});renderHistory();updateAlertButton();
+  meds.forEach(med=>{if(med.mode==='oxy_slots'){cards.appendChild(renderOxyCard(med));return}if(med.mode==='bedtime'){cards.appendChild(renderGabapentinCard(med));return}const sch=scheduleFor(med),st=statusFor(med),c=document.createElement('div');c.className='card';let extra='';if(med.mode==='am_pm'){const info=amPmInfo(med),parts=[];if(info.am)parts.push(`AM: ${fmtTime(info.am.time)}`);if(info.pm)parts.push(`PM: ${fmtTime(info.pm.time)}`);if(parts.length)extra=`<div class="small">${parts.join(' • ')}</div>`}else if(sch.last&&med.max>1){extra=`<div class="small">Last recorded: ${fmtTime(sch.last)}${sch.end?` • projected final target: ${fmtTime(sch.end)}`:''}</div>`}c.innerHTML=`<div class="row"><div><div class="name">${med.name}</div><div class="meta">${med.desc}</div></div><div class="small">${sch.logs.length}/${med.max}</div></div><div class="status ${st.cls}">${st.title}</div><div class="detail">${st.detail}</div>${extra}`;if(med.mode==='am_pm')renderAmPmButtons(c,med);else{const b=document.createElement('button');b.className='take';b.disabled=!st.enabled;b.textContent=med.mode==='prn'?'I Took This':'Taken';b.addEventListener('click',()=>takeDose(med.id));c.appendChild(b)}cards.appendChild(c)});renderHistory();updateAlertButton();
 }
-function renderHistory(){const box=document.getElementById('history'),rows=[...state.logs].sort((a,b)=>b.time-a.time);if(!rows.length){box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>';return}box.innerHTML='';rows.forEach(x=>{const med=meds.find(m=>m.id===x.med),r=document.createElement('div');r.className='hist-row';let label=med?med.name:x.med;if(x.med==='oxy')label=x.amountMg===5||x.amountMg===10?`Oxy ${x.amountMg} mg`:'Oxy (older entry)';else if(med&&med.mode==='am_pm'){const all=logsFor(med.id),idx=all.findIndex(e=>e.id===x.id);label+=` (${inferredSlot(x,Math.max(idx,0),all).toUpperCase()})`}r.innerHTML=`<span><strong>${label}</strong>${x.jobId?'<div class="small">Background reminder scheduled</div>':''}</span><span>${fmtTime(x.time)}</span>`;box.appendChild(r)})}
+function renderHistory(){const box=document.getElementById('history'),rows=[...state.logs].sort((a,b)=>b.time-a.time);if(!rows.length){box.innerHTML='<div class="hist-row"><span>No doses recorded yet.</span></div>';return}box.innerHTML='';rows.forEach(x=>{const med=meds.find(m=>m.id===x.med),r=document.createElement('div');r.className='hist-row';let label=med?med.name:x.med;if(x.med==='oxy')label=x.amountMg===5||x.amountMg===10?`Oxy ${x.amountMg} mg`:'Oxy (older entry)';else if(x.med==='gabapentin')label='Gabapentin 300 mg';else if(med&&med.mode==='am_pm'){const all=logsFor(med.id),idx=all.findIndex(e=>e.id===x.id);label+=` (${inferredSlot(x,Math.max(idx,0),all).toUpperCase()})`}r.innerHTML=`<span><strong>${label}</strong>${x.jobId?'<div class="small">Background reminder scheduled</div>':''}</span><span>${fmtTime(x.time)}</span>`;box.appendChild(r)})}
 
 /* Push */
 function urlBase64ToUint8Array(base64String){const padding='='.repeat((4-base64String.length%4)%4),base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
@@ -223,9 +279,24 @@ async function rescheduleRobaxinPush(){
   const sub=await getPushSubscription(false);if(!sub){save();return}
   state.robaxinTimer.jobId=await scheduleWorkerPush(dueAt,'Robaxin availability reminder','Robaxin may be available again if needed. Open Medication Timer to confirm timing and the Oxy separation rule.','med-robaxin');save();
 }
+async function rescheduleGabapentinPush(){
+  if(state.gabapentinJobId){await cancelPush(state.gabapentinJobId);state.gabapentinJobId=null}
+  if(gabapentinLog()){save();return}
+  const timing=parseBedtimeToday();
+  if(!timing||timing.dueAt<=Date.now()){save();return}
+  const sub=await getPushSubscription(false);
+  if(!sub){save();return}
+  state.gabapentinJobId=await scheduleWorkerPush(
+    timing.dueAt,
+    'Gabapentin reminder',
+    `Gabapentin 300 mg is scheduled now, 1 hour before bedtime (${fmtTime(timing.bedtime)}).`,
+    'med-gabapentin'
+  );
+  save();
+}
 async function enableAlerts(){try{if(!('Notification'in window))throw new Error('Notifications are not supported here.');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('Notification permission was not granted.');const sub=await getPushSubscription(true);if(!sub)throw new Error('Push subscription could not be created.');await ensurePendingReminders();msg('Background alerts enabled.');render()}catch(e){msg(e.message||String(e),true)}}
 async function schedulePush(med,dueAt,slot=null){if(med.mode==='am_pm'){const label=slot==='pm'?'PM':'AM';return scheduleWorkerPush(dueAt,`${med.name} ${label} reminder`,`${med.name} ${label} dose window is now open.`,`med-${med.id}-${label.toLowerCase()}`)}const body=med.mode==='prn'?`${med.name} is available again if needed. Check the medication instructions before taking another dose.`:`${med.name} next reminder time has been reached.`;return scheduleWorkerPush(dueAt,`${med.name} reminder`,body,`med-${med.id}`)}
-async function disableAlerts(){try{const ids=[...new Set([...state.logs.map(x=>x.jobId).filter(Boolean),...(state.oxyPushJobs||[]).map(j=>j.jobId).filter(Boolean),state.robaxinTimer.jobId].filter(Boolean))];await Promise.all(ids.map(cancelPush));state.logs.forEach(x=>x.jobId=null);state.oxyPushJobs=[];state.robaxinTimer.jobId=null;save();const sub=await getPushSubscription(false);if(sub)await sub.unsubscribe();msg('Background alerts disabled. Medication timers and history are still active.');render()}catch(e){msg(`Could not disable background alerts: ${e.message||String(e)}`,true)}}
+async function disableAlerts(){try{const ids=[...new Set([...state.logs.map(x=>x.jobId).filter(Boolean),...(state.oxyPushJobs||[]).map(j=>j.jobId).filter(Boolean),state.robaxinTimer.jobId,state.gabapentinJobId].filter(Boolean))];await Promise.all(ids.map(cancelPush));state.logs.forEach(x=>x.jobId=null);state.oxyPushJobs=[];state.robaxinTimer.jobId=null;state.gabapentinJobId=null;save();const sub=await getPushSubscription(false);if(sub)await sub.unsubscribe();msg('Background alerts disabled. Medication timers and history are still active.');render()}catch(e){msg(`Could not disable background alerts: ${e.message||String(e)}`,true)}}
 async function toggleAlerts(){try{const sub=await getPushSubscription(false);if(sub)await disableAlerts();else await enableAlerts()}catch(e){msg(e.message||String(e),true)}}
 
 /* Recording */
@@ -234,6 +305,12 @@ async function takeDose(id,slot=null){
   if(med.mode==='am_pm'){
     const info=amPmInfo(med),now=Date.now(),sixAm=todayAt(6),sixPm=todayAt(18);if(slot==='am'){if(info.am||now<sixAm||now>=sixPm)return}else if(slot==='pm'){if(info.pm||now<sixPm)return;if(info.am&&info.am.jobId){await cancelPush(info.am.jobId);info.am.jobId=null}}else return;
     const entry={id:crypto.randomUUID?crypto.randomUUID():String(now+Math.random()),med:id,time:now,slot,jobId:null};state.logs.push(entry);save();render();if(slot==='am'&&sixPm>Date.now()){try{entry.jobId=await schedulePush(med,sixPm,'pm');save();msg(entry.jobId?`PM background reminder scheduled for ${med.name} at ${fmtTime(sixPm)}.`:'AM dose recorded. Background alerts are not enabled.');render()}catch(e){msg(`AM dose recorded, but PM push scheduling failed: ${e.message}`,true)}}else msg(`${med.name} PM dose recorded.`);return;
+  }
+  if(id==='gabapentin'){
+    if(gabapentinLog())return;
+    if(state.gabapentinJobId){await cancelPush(state.gabapentinJobId);state.gabapentinJobId=null}
+    const now=Date.now(),entry={id:crypto.randomUUID?crypto.randomUUID():String(now+Math.random()),med:id,time:now,amountMg:300,jobId:null};
+    state.logs.push(entry);save();msg(`Gabapentin 300 mg recorded at ${fmtTime(now)}.`);render();return;
   }
   if(id==='robaxin'){
     const st=robaxinStatus(med);if(!st.enabled)return;const now=Date.now(),previousLastRobaxinTime=state.lastRobaxinTime||0,previousRobaxinTimer={baseDueAt:state.robaxinTimer.baseDueAt||0,jobId:state.robaxinTimer.jobId||null};
@@ -244,8 +321,8 @@ async function takeDose(id,slot=null){
   const st=statusFor(med);if(!st.enabled)return;const now=Date.now(),entry={id:crypto.randomUUID?crypto.randomUUID():String(now+Math.random()),med:id,time:now,jobId:null};state.logs.push(entry);save();render();const sch=scheduleFor(med);if(sch.next&&sch.next>Date.now()){try{entry.jobId=await schedulePush(med,sch.next);save();msg(entry.jobId?`Background reminder scheduled for ${med.name} at ${fmtTime(sch.next)}.`:'Dose recorded. Background alerts are not enabled.');render()}catch(e){msg(`Dose recorded, but push scheduling failed: ${e.message}`,true)}}
 }
 async function ensurePendingReminders(){
-  await rescheduleOxyPushJobs();await rescheduleRobaxinPush();
-  for(const med of meds){if(med.mode==='oxy_slots'||med.id==='robaxin')continue;if(med.mode==='am_pm'){const info=amPmInfo(med),sixPm=todayAt(18);if(info.am&&!info.pm&&sixPm>Date.now()&&!info.am.jobId){try{info.am.jobId=await schedulePush(med,sixPm,'pm');save()}catch(e){msg(`Could not schedule ${med.name} PM reminder: ${e.message}`,true)}}continue}const sch=scheduleFor(med);if(!sch.next||sch.next<=Date.now()||!sch.logs.length)continue;const last=sch.logs[sch.logs.length-1];if(last.jobId)continue;try{last.jobId=await schedulePush(med,sch.next);save()}catch(e){msg(`Could not schedule ${med.name}: ${e.message}`,true)}}
+  await rescheduleOxyPushJobs();await rescheduleRobaxinPush();await rescheduleGabapentinPush();
+  for(const med of meds){if(med.mode==='oxy_slots'||med.id==='robaxin'||med.mode==='bedtime')continue;if(med.mode==='am_pm'){const info=amPmInfo(med),sixPm=todayAt(18);if(info.am&&!info.pm&&sixPm>Date.now()&&!info.am.jobId){try{info.am.jobId=await schedulePush(med,sixPm,'pm');save()}catch(e){msg(`Could not schedule ${med.name} PM reminder: ${e.message}`,true)}}continue}const sch=scheduleFor(med);if(!sch.next||sch.next<=Date.now()||!sch.logs.length)continue;const last=sch.logs[sch.logs.length-1];if(last.jobId)continue;try{last.jobId=await schedulePush(med,sch.next);save()}catch(e){msg(`Could not schedule ${med.name}: ${e.message}`,true)}}
 }
 async function undo(){
   if(!state.logs.length)return;const last=[...state.logs].sort((a,b)=>b.time-a.time)[0];await cancelPush(last.jobId);
@@ -255,12 +332,12 @@ async function undo(){
 }
 async function clearToday(){
   if(!confirm('Reset today’s recorded doses? This resets today’s counts/history but preserves active Oxy and Robaxin timing lockouts.'))return;
-  const persistentIds=[...(state.oxyPushJobs||[]).map(j=>j.jobId).filter(Boolean),state.robaxinTimer.jobId].filter(Boolean);
+  const persistentIds=[...(state.oxyPushJobs||[]).map(j=>j.jobId).filter(Boolean),state.robaxinTimer.jobId].filter(Boolean);if(state.gabapentinJobId)await cancelPush(state.gabapentinJobId);
   const ordinaryIds=state.logs.map(x=>x.jobId).filter(id=>id&&!persistentIds.includes(id));await Promise.all(ordinaryIds.map(cancelPush));
-  const persist={oxySlots:state.oxySlots,oxyPushJobs:state.oxyPushJobs,lastOxyTime:state.lastOxyTime,lastRobaxinTime:state.lastRobaxinTime,robaxinTimer:state.robaxinTimer};state=freshState(persist);save();msg('Today’s log reset. Active Oxy and Robaxin timing lockouts are preserved.');render();
+  const persist={oxySlots:state.oxySlots,oxyPushJobs:state.oxyPushJobs,lastOxyTime:state.lastOxyTime,lastRobaxinTime:state.lastRobaxinTime,robaxinTimer:state.robaxinTimer,bedtime:state.bedtime};state=freshState(persist);save();msg('Today’s log reset. Active Oxy and Robaxin timing lockouts are preserved.');render();
 }
 async function updateAlertButton(){const b=document.getElementById('notifyBtn');try{const reg=await getRegistration();if(!reg.pushManager){b.textContent='Enable Background Alerts';b.disabled=false;return}const s=await reg.pushManager.getSubscription();b.textContent=s?'Disable Background Alerts':'Enable Background Alerts';b.disabled=false}catch(_){b.textContent='Enable Background Alerts';b.disabled=false}}
-function dayRolloverCheck(){if(state.day!==localDayKey()){const persist={oxySlots:state.oxySlots,oxyPushJobs:state.oxyPushJobs,lastOxyTime:state.lastOxyTime,lastRobaxinTime:state.lastRobaxinTime,robaxinTimer:state.robaxinTimer};state=freshState(persist);save();render()}}
+function dayRolloverCheck(){if(state.day!==localDayKey()){const persist={oxySlots:state.oxySlots,oxyPushJobs:state.oxyPushJobs,lastOxyTime:state.lastOxyTime,lastRobaxinTime:state.lastRobaxinTime,robaxinTimer:state.robaxinTimer,bedtime:state.bedtime};state=freshState(persist);save();render();getPushSubscription(false).then(s=>{if(s)return rescheduleGabapentinPush()}).catch(()=>{})}}
 document.getElementById('notifyBtn').addEventListener('click',toggleAlerts);document.getElementById('undoBtn').addEventListener('click',undo);document.getElementById('clearBtn').addEventListener('click',clearToday);getRegistration().catch(()=>{});render();getPushSubscription(false).then(s=>{if(s)return ensurePendingReminders()}).catch(()=>{});setInterval(()=>{dayRolloverCheck();render()},30000);
 </script>
 </body>
